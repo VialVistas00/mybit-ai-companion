@@ -1,0 +1,5 @@
+# name: CHASE
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+a4:1 b c5 b4 a:2 r a:1 b c5 b4 a:2 r a:2 e5 d# e f e d# e b4:1 c5 d c b4:2 r b:1 c5 d c b4:2 r b:2 e5 d# e f e d# e

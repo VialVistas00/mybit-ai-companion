@@ -1,0 +1,70 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MYBIT 曲库</title><style>
+body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei";margin:0;padding:14px;background:#111;color:#eee}
+h1{font-size:18px;margin:0 0 4px}
+.m{color:#888;font-size:12px;margin-bottom:12px}
+.row{display:flex;align-items:center;gap:5px;padding:8px 0;border-bottom:1px solid #262626}
+.row b{width:24px;color:#5cf;text-align:right;font-size:13px}
+.nm{flex:1;font-size:14px;word-break:break-all;min-width:0}
+.d{color:#888;font-size:11px;width:46px;text-align:right}
+button{background:#222;color:#ddd;border:1px solid #444;border-radius:6px;padding:5px 7px;font-size:12px;flex:none}
+button:active{background:#5cf;color:#000}
+.act{display:flex;gap:6px;margin:12px 0}
+.up{border:1px dashed #444;border-radius:8px;padding:10px;margin-top:14px}
+.up input{width:100%;color:#aaa;font-size:12px;margin-bottom:8px}
+#st{color:#5cf;font-size:12px;margin-left:8px}
+.play{background:#063;color:#fff;border-color:#063}
+</style></head><body>
+<h1>MYBIT 曲库 <span id="st"></span></h1>
+<div class="m">共 __N__ 首 · <span id="ip">__IP__</span> · 格式 .mel（音名:时长，如 c4:2 e4:2 r:4）</div>
+<div class="act"><button onclick="go('/stop')">&#9632; 停止</button>
+<button onclick="load()">&#8635; 刷新</button></div>
+<div id="list">加载中...</div>
+<div class="up">
+<div style="font-size:12px;color:#888;margin-bottom:6px">上传歌曲（.mel 文本，最大 64KB）</div>
+<input type="file" id="f" accept=".mel,.txt">
+<button onclick="up()">上传</button>
+</div>
+<script>
+var L=[];
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function go(u){fetch(u).then(function(){load()})}
+function fmt(s){var m=Math.floor(s/60);var r=s-m*60;return m+':'+(r<10?'0':'')+r}
+function loadro(){
+ fetch('/api/list').then(function(r){return r.json()}).then(function(j){
+  L=j.files;
+  var h='';
+  for(var i=0;i<L.length;i++){var x=L[i];
+   h+='<div class="row"><b>'+(i+1)+'</b><div class="nm">'+esc(x.n)+'</div>'+
+   '<div class="d">'+fmt(x.sec)+'</div>'+
+   '<button class="play" onclick="go(\'/play?f='+encodeURIComponent(x.f)+'\')">播</button>'+
+   '<button onclick="go(\'/mv?f='+encodeURIComponent(x.f)+'&d=u\')">&#8593;</button>'+
+   '<button onclick="go(\'/mv?f='+encodeURIComponent(x.f)+'&d=d\')">&#8595;</button>'+
+   '<button onclick="rn(\''+x.f+'\')">改</button>'+
+   '<button onclick="del(\''+x.f+'\')">删</button></div>'}
+  document.getElementById('list').innerHTML=h||'<div class="m">还没有歌曲，先上传一首</div>';
+ }).catch(function(e){document.getElementById('st').textContent='读取失败'})
+}
+function load(){loadro()}
+function del(f){if(confirm('删除 '+f+' ?'))go('/rm?f='+encodeURIComponent(f))}
+function rn(f){var n=prompt('新文件名（不含 .mel）',f.replace(/\.mel$/i,''));if(n)go('/rn?f='+encodeURIComponent(f)+'&n='+encodeURIComponent(n))}
+function up(){
+ var el=document.getElementById('f');
+ if(!el.files.length){alert('先选文件');return}
+ var f=el.files[0];
+ if(f.size>65536){alert('文件太大（上限 64KB）');return}
+ document.getElementById('st').textContent='上传中...';
+ fetch('/up?f='+encodeURIComponent(f.name),{method:'POST',body:f}).then(function(r){
+  if(!r.ok){return r.text().then(function(t){alert('上传失败: '+t)})}
+  document.getElementById('st').textContent='已上传';
+  loadro();
+ }).catch(function(){alert('上传失败')})
+}
+loadro();
+setInterval(function(){
+ fetch('/api/status').then(function(r){return r.json()}).then(function(j){
+  document.getElementById('st').textContent=(j.playing?(j.paused?'暂停':'播放'):'停止')+' · '+j.name;
+ }).catch(function(){})
+},3000);
+</script></body></html>

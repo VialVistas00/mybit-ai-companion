@@ -1,0 +1,5 @@
+# name: POWER_DOWN
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+g5:1 d# c g4:2 b:1 c5:3

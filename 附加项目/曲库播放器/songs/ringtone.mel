@@ -1,0 +1,5 @@
+# name: RINGTONE
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+c4:1 d e:2 g d:1 e f:2 a e:1 f g:2 b c5:4

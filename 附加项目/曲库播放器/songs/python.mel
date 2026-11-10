@@ -1,0 +1,5 @@
+# name: PYTHON
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+d5:1 b4 r b b a# b g5 r d d r b4 c5 r c c r d e:5 c:1 a4 r a a g# a f#5 r e e r c b4 r b b r c5 d:5 d:1 b4 r b b a# b b5 r g g r d c# r a a r a a_colon_5 g:1 f#:2 a:1 a g# a e:2 a:1 a g# a d r c# d r c# d:2 r_colon_3

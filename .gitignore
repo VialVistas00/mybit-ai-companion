@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 配置文件（含密钥，不入库）
+gateway_config.json
+
+# 运行时产物
+_agent.log
+_agent.err.log
+_bridge.log
+_bridge.err.log
+_bridge_live.log
+_gateway.log
+_gateway.err.log
+_server.log
+_server.err.log
+_shots/
+_notes.txt
+*.wav
+
+# 板子备份与临时文件
+_scratch/
+_board_backup/
+__pycache__/
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时提交信息文件
+_msg.txt

@@ -1,0 +1,5 @@
+# name: DONG_FANG_HONG
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+g:4 g:2 a:2 d:8 c:4 c:2 a3:2 d4:8 g:4 g:4 a:2 c5:2 a4:2 g:2 c:4 c:2 a3:2 d4:8 g:4 d:4 c b3:2 a g:4 g4:4 d:4 e:2 d:2 c:4 c:2 a3:2 d4:2 e:2 d:2 c:2 d4:2 c:2 b3:2 a:2 g:12

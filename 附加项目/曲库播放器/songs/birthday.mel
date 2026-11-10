@@ -1,0 +1,5 @@
+# name: BIRTHDAY
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+c4:3 c:1 d:4 c:4 f e_colon_8 c:3 c:1 d:4 c:4 g f_colon_8 c:3 c:1 c5:4 a4 f e d a_hash__colon_3 a#:1 a:4 f g f_colon_8

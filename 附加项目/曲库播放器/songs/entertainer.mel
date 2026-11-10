@@ -1,0 +1,5 @@
+# name: ENTERTAINER
+# bpm: 120
+# loop: 0
+# source: firmware builtin
+d4:1 d# e c5:2 e4:1 c5:2 e4:1 c5:3 c:1 d d# e c d e:2 b4:1 d5:2 c:4

@@ -1,0 +1,19 @@
+{
+  "_comment": "复制为 gateway_config.json 并填入你自己的 Key",
+  "host": "0.0.0.0",
+  "port": 8080,
+
+  "_comment_llm": "任何 OpenAI 兼容接口都可以",
+  "llm_base": "https://api.deepseek.com/v1",
+  "llm_key": "sk-在此填入你的 DeepSeek API Key",
+  "llm_model": "deepseek-chat",
+  "system_prompt": "你是小特，一块信息科技实验板上的AI学伴。用口语化中文回答，不用表情符号和特殊字符，回答控制在70字以内。",
+
+  "_comment_asr": "local = 本地 faster-whisper；xfyun = 讯飞云（需下方三件套）",
+  "asr_engine": "local",
+
+  "_comment_xfyun": "讯飞语音听写凭据，可在 console.xfyun.cn 获取",
+  "xfyun_appid": "",
+  "xfyun_apikey": "",
+  "xfyun_apisecret": ""
+}
