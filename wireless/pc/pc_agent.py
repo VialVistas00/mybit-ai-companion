@@ -287,6 +287,80 @@ Write-Output 'OK'
     return False, "截图失败: %s" % (r.stderr or "")[:80]
 
 
+def do_dsh(p):
+    """
+    把文字输入 DSH 对话窗口并自动发送。
+
+    做法：
+      1. 找到 DeepSeek Harness 窗口，置前台
+      2. 用剪贴板粘贴文字（避免 SendKeys 对中文支持差）
+      3. 发 Enter
+
+    需要：DSH 已运行且窗口没最小化。
+    """
+    text = (p.get("text") or "").strip()
+    if not text:
+        return False, "缺少 text"
+
+    ps = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class W {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+    [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string n);
+}
+"@
+
+# 找 DSH 主窗口
+$proc = Get-Process | Where-Object {
+    $_.MainWindowTitle -ne '' -and
+    ($_.ProcessName -like '*Harness*' -or $_.ProcessName -like '*DeepSeek*' -or
+     $_.MainWindowTitle -like '*DeepSeek Harness*')
+} | Select-Object -First 1
+
+if (-not $proc) {
+    Write-Output 'DSH_NOT_FOUND'
+    exit 1
+}
+
+$h = $proc.MainWindowHandle
+[W]::ShowWindow($h, 9) | Out-Null      # SW_RESTORE
+[W]::SetForegroundWindow($h) | Out-Null
+Start-Sleep -Milliseconds 600
+
+# 粘贴文字
+Set-Clipboard -Value $env:MYBIT_TEXT
+Start-Sleep -Milliseconds 250
+[System.Windows.Forms.SendKeys]::SendWait('^v')
+Start-Sleep -Milliseconds 500
+
+# 发送
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+Start-Sleep -Milliseconds 300
+
+Write-Output ('DSH_SENT:' + $proc.Id)
+"""
+
+    env = os.environ.copy()
+    env["MYBIT_TEXT"] = text
+
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-Command", ps],
+        capture_output=True, text=True, timeout=45,
+        encoding="utf-8", errors="replace", env=env)
+
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if "DSH_SENT" in out:
+        return True, "已发送到 DSH: %s" % text[:40]
+    if "DSH_NOT_FOUND" in out:
+        return False, "没找到 DSH 窗口，请先打开 DeepSeek Harness"
+    return False, "发送失败: %s" % out[:80]
+
+
 def do_lock(p):
     subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"], timeout=10)
     return True, "已锁定电脑"
@@ -301,6 +375,7 @@ EXECUTORS = {
     "volume": do_volume,
     "screenshot": do_screenshot,
     "lock": do_lock,
+    "dsh": do_dsh,
 }
 
 

@@ -121,30 +121,82 @@ def wav_to_pcm(raw):
     return pcm, rate
 
 
-def remove_dc_and_gain(pcm, sampwidth=2):
-    """去直流 + 裁启动尖峰 + 稳健归一化（MYBIT 录音有 -8500 偏置）"""
+def remove_dc_and_gain(pcm, sampwidth=2, target_rms=6000.0):
+    """
+    去直流 + 裁启动尖峰 + 自适应增益
+
+    MYBIT 板子的录音问题（实测）：
+      - 直流偏置约 -8500
+      - 真实语音幅度只有 ±330（正常应该 ±10000）
+      - 开头 ~120 个样本有 36551 的启动尖峰
+
+    原来的实现用 p95 分位数做归一化，缺陷是：
+      如果录音里 95% 是静音，p95 很小 -> 放大倍数虚高 -> 把噪声也放大成刺啦声
+      实测「打开电脑上的浏览器」被识别成「拍電腦上的牛腩刺」就是这个原因。
+
+    新做法：
+      1. 去均值
+      2. 裁掉开头尖峰
+      3. 用「有声音段」的 RMS 算增益（先按 p90 判断哪些是有声样本）
+      4. 增益上限 30 倍，防止把纯噪声放大
+      5. 软限幅，避免削波失真
+    """
     n = len(pcm) // 2
     if n < 400:
         return pcm
+
     s = struct.unpack("<%dh" % n, pcm[:n * 2])
     mean = sum(s) // n
     c = [v - mean for v in s]
-    for i in range(min(120, n)):
+
+    # 裁掉启动尖峰
+    skip = min(200, n // 10)
+    for i in range(skip):
         c[i] = 0
+
+    # 找有声样本的阈值（p85）
     mags = sorted(abs(v) for v in c)
-    p95 = mags[int(len(mags) * 0.95)] if mags else 0
-    peak = p95 if p95 > 200 else (mags[-1] if mags else 0)
-    if peak < 100:
+    if not mags:
         return pcm
-    scale = 0.6 * 32767.0 / peak
-    out = bytearray()
+    p85 = mags[int(len(mags) * 0.85)]
+    if p85 < 30:
+        return pcm              # 几乎全静音，不动
+
+    # 只统计超过阈值的样本（真实语音），算 RMS
+    total = 0
+    cnt = 0
     for v in c:
-        x = int(v * scale)
-        if x > 32767:
-            x = 32767
-        elif x < -32768:
-            x = -32768
-        out += struct.pack("<h", x)
+        if abs(v) >= p85 * 0.5:
+            total += v * v
+            cnt += 1
+    if cnt < 50:
+        return pcm
+    rms = (total / cnt) ** 0.5
+    if rms < 20:
+        return pcm
+
+    # 算增益，限制在 1 ~ 30 倍之间
+    gain = target_rms / rms
+    if gain < 1.0:
+        gain = 1.0
+    elif gain > 30.0:
+        gain = 30.0
+
+    # 应用增益 + 软限幅（tanh 近似）
+    out = bytearray()
+    limit = 30000.0
+    for v in c:
+        x = v * gain
+        if x > limit:
+            # 软压：超出部分压缩到 1/8
+            x = limit + (x - limit) / 8.0
+            if x > 32767:
+                x = 32767
+        elif x < -limit:
+            x = -limit + (x + limit) / 8.0
+            if x < -32768:
+                x = -32768
+        out += struct.pack("<h", int(x))
     return bytes(out)
 
 
@@ -175,14 +227,16 @@ def recognize(raw):
     if rate != 16000:
         pcm = resample_to_16k(pcm, rate)
 
-    # ★ 关键：先做静音检测。板子麦克风信号幅度小，
-    #   用均方根判断有没有真实语音，静音就直接返回，省掉 whisper 的 2 秒。
+    # 静音检测：这块板子信号弱（真实语音幅度仅 ±330），
+    # 门槛设低一点，避免把有效语音当静音丢掉。
     rms = pcm_rms(pcm)
-    if rms < 60:
-        note("静音 (rms=%.1f)，跳过识别" % rms)
+    note("音频强度 rms=%.1f  bytes=%d" % (rms, len(pcm)))
+    if rms < 25:
+        note("静音，跳过识别")
         return "", None
 
     pcm = remove_dc_and_gain(pcm)
+    note("增益后 rms=%.1f" % pcm_rms(pcm))
 
     d = CFG.get("audio_dir") or "/tmp/mybit_audio"
     os.makedirs(d, exist_ok=True)
@@ -218,12 +272,15 @@ def recognize(raw):
 
         # 过滤已知的 hallucination 产物
         bad = ("请使用简体中文转写", "请使用简体中文", "字幕由", "感谢观看",
-               "谢谢观看", "订阅", "Amara", "字幕")
+               "谢谢观看", "订阅", "Amara", "字幕", "字幕by")
         for b in bad:
             if text.startswith(b):
                 text = text.replace(b, "").strip()
         if text in bad:
             text = ""
+
+        # 繁体转简体（whisper 有时输出繁体）
+        text = to_simplified(text)
 
         return text, None
     except Exception as e:
@@ -256,36 +313,47 @@ def pcm_rms(pcm):
 
 # ---------------- 电脑操作指令 ----------------
 # LLM 用它判断用户是否想让电脑做事，并给出结构化指令
-AGENT_PROMPT = """你是一个电脑操作指令解析器。判断用户的话是否想操作电脑。
+AGENT_PROMPT = """你是一个电脑操作指令解析器。用户的话来自语音识别，可能有个别字听错。
 
-规则：
+重要：语音识别常有同音字错误，请按语义理解，不要被个别错字卡住。
+例如：
+- "打开电脑上的牛奶器" -> 实际是"浏览器"
+- "打开记是本" -> "记事本"
+- "打开鸡算器" -> "计算器"
+- "截过图" -> "截图"
+- "把阴凉调大" -> "音量调大"
+- "给张三发小心说明天见" -> "发消息"
+
+判断用户的话是否想操作电脑：
 - 想操作电脑 -> 只输出一行 JSON，不要任何解释和markdown
 - 不想操作电脑 -> 只输出：NONE
 
 支持的指令类型：
-1. 打开网址/网站/浏览器
+
+1. 打开网址/网站/浏览器（"浏览器""百度""搜索xxx"都归这里）
    {"type":"open_url","url":"https://...","name":"网站名"}
+   例：打开电脑上的浏览器 -> {"type":"open_url","url":"https://www.bing.com","name":"浏览器"}
    例：打开百度 -> {"type":"open_url","url":"https://www.baidu.com","name":"百度"}
-   例：打开浏览器 -> {"type":"open_url","url":"https://www.bing.com","name":"浏览器"}
    例：搜索杭州天气 -> {"type":"open_url","url":"https://www.bing.com/search?q=杭州天气","name":"搜索"}
 
 2. 打开电脑程序
    {"type":"app","name":"notepad","label":"记事本"}
-   可用程序：notepad(记事本) calc(计算器) mspaint(画图) explorer(资源管理器)
-             cmd(命令行) taskmgr(任务管理器) control(控制面板)
+   可用：notepad(记事本) calc(计算器) mspaint(画图) explorer(资源管理器)
+         cmd(命令行) taskmgr(任务管理器) control(控制面板)
    例：打开记事本 -> {"type":"app","name":"notepad","label":"记事本"}
 
 3. 给QQ某人发消息
    {"type":"qq","contact":"联系人名","message":"消息内容"}
    例：给张三发消息说明天见 -> {"type":"qq","contact":"张三","message":"明天见"}
 
-4. 执行 PowerShell 命令（仅限无害操作：查询信息、打开文件、调整音量亮度等）
+4. 执行 PowerShell 命令（查询信息类）
    {"type":"shell","command":"命令"}
    例：看看D盘还剩多少空间 -> {"type":"shell","command":"Get-PSDrive D | Select-Object Used,Free"}
 
-5. 控制音量/亮度
+5. 控制音量
    {"type":"volume","level":0到100}  或  {"type":"volume","mute":true}
    例：音量调到50 -> {"type":"volume","level":50}
+   例：阴凉调到50 -> {"type":"volume","level":50}
    例：静音 -> {"type":"volume","mute":true}
 
 6. 截图
@@ -297,7 +365,81 @@ AGENT_PROMPT = """你是一个电脑操作指令解析器。判断用户的话�
 8. 打开文件或文件夹
    {"type":"path","path":"D:\\\\数据文件","label":"数据文件"}
 
-只输出 JSON 或 NONE，不要其他内容。"""
+9. 向 DSH 对话窗口发送文字（当用户想让AI做事、提问、或说的话不是上面任何操作时，
+   默认走这个）
+   {"type":"dsh","text":"要发送的完整文字"}
+   例：帮我写一个冒泡排序 -> {"type":"dsh","text":"帮我写一个冒泡排序"}
+   例：你好小特介绍一下你自己 -> {"type":"dsh","text":"你好小特介绍一下你自己"}
+   例：今天天气怎么样 -> {"type":"dsh","text":"今天天气怎么样"}
+
+只在完全无法理解或明显是闲聊时才输出 NONE。
+判断不准时，优先选 dsh（把文字发进对话窗口）而不是 NONE。"""
+
+# whisper 有时输出繁体或台湾用词，转成简体常用词
+T2S_MAP = {
+    "開": "开", "電": "电", "腦": "脑", "瀏": "浏", "覽": "览", "器": "器",
+    "網": "网", "頁": "页", "關": "关", "閉": "闭", "檔": "档", "案": "案",
+    "夾": "夹", "記": "记", "事": "事", "算": "算", "畫": "画", "圖": "图",
+    "聲": "声", "音": "音", "調": "调", "節": "节", "靜": "静", "截": "截",
+    "螢": "萤", "幕": "幕", "屏": "屏", "鎖": "锁", "定": "定", "務": "务",
+    "管": "管", "理": "理", "資": "资", "源": "源", "應": "应", "用": "用",
+    "程": "程", "式": "式", "給": "给", "發": "发", "訊": "讯", "息": "息",
+    "這": "这", "個": "个", "請": "请", "幫": "帮", "我": "我", "查": "查",
+    "看": "看", "還": "还", "剩": "剩", "多": "多", "少": "少", "間": "间",
+    "執": "执", "行": "行", "命": "命", "令": "令", "對": "对", "話": "话",
+    "視": "视", "窗": "窗", "口": "口", "系": "系", "統": "统", "啟": "启",
+    "動": "动", "選": "选", "擇": "择", "設": "设", "置": "置", "時": "时",
+    "鐘": "钟", "日": "日", "曆": "历", "計": "计", "轉": "转", "換": "换",
+    "輸": "输", "入": "入", "搜": "搜", "尋": "寻", "熱": "热", "門": "门",
+}
+
+
+def to_simplified(text):
+    """繁体转简体（只处理常见字）"""
+    if not text:
+        return text
+    out = []
+    for ch in text:
+        out.append(T2S_MAP.get(ch, ch))
+    return "".join(out)
+
+
+# 语音识别常见同音错字 -> 正确词（用于本地纠错，喂给 LLM 前先过一遍）
+ASR_FIXES = [
+    # 浏览器相关
+    ("牛奶器", "浏览器"), ("浏懒器", "浏览器"), ("流览器", "浏览器"),
+    ("浏览其", "浏览器"), ("浏然器", "浏览器"), ("留览器", "浏览器"),
+    ("牛奶起", "浏览器"),
+    # 记事本
+    ("记是本", "记事本"), ("计事本", "记事本"), ("记事本本", "记事本"),
+    # 计算器
+    ("鸡算器", "计算器"), ("记算器", "计算器"), ("几算器", "计算器"),
+    # 音量
+    ("阴凉", "音量"), ("阴量", "音量"), ("音凉", "音量"),
+    # 截图
+    ("截过图", "截图"), ("截土", "截图"), ("接图", "截图"),
+    # 消息
+    ("发小心", "发消息"), ("发消西", "发消息"), ("发小气", "发消息"),
+    # 文件夹
+    ("文件家", "文件夹"), ("问价夹", "文件夹"), ("文件甲", "文件夹"),
+    # 屏幕
+    ("平幕", "屏幕"), ("瓶幕", "屏幕"),
+    # 任务
+    ("认务", "任务"),
+    # 桌面
+    ("桌免", "桌面"), ("卓面", "桌面"),
+]
+
+
+def fix_asr_text(text):
+    """修正语音识别的常见同音错字 + 繁体转简体"""
+    if not text:
+        return text
+    out = to_simplified(text)
+    for wrong, right in ASR_FIXES:
+        if wrong in out:
+            out = out.replace(wrong, right)
+    return out
 
 
 def parse_agent_intent(text):
@@ -305,6 +447,12 @@ def parse_agent_intent(text):
     import requests
     if not CFG.get("llm_key"):
         return None
+
+    # 先做本地同音字纠错
+    fixed = fix_asr_text(text)
+    if fixed != text:
+        note("纠错: %s -> %s" % (text[:30], fixed[:30]))
+
     try:
         r = requests.post(
             CFG["llm_base"].rstrip("/") + "/chat/completions",
@@ -314,7 +462,7 @@ def parse_agent_intent(text):
                 "model": CFG["llm_model"],
                 "messages": [
                     {"role": "system", "content": AGENT_PROMPT},
-                    {"role": "user", "content": text},
+                    {"role": "user", "content": fixed},
                 ],
                 "stream": False,
                 "max_tokens": 200,
@@ -351,6 +499,48 @@ def parse_agent_intent(text):
     except Exception as e:
         note("意图解析失败: %s" % str(e)[:60])
         return None
+
+
+# 本地模糊匹配兜底（LLM 挂了或没配 key 时也能用）
+FUZZY_RULES = [
+    # (关键词列表, 任务类型, payload)
+    (["浏览器", "打开网页", "上网", "bing"], "open_url",
+     {"url": "https://www.bing.com", "name": "浏览器"}),
+    (["百度"], "open_url",
+     {"url": "https://www.baidu.com", "name": "百度"}),
+    (["记事本"], "app", {"name": "notepad", "label": "记事本"}),
+    (["计算器"], "app", {"name": "calc", "label": "计算器"}),
+    (["画图"], "app", {"name": "mspaint", "label": "画图"}),
+    (["资源管理器", "我的电脑"], "app", {"name": "explorer", "label": "资源管理器"}),
+    (["任务管理器"], "app", {"name": "taskmgr", "label": "任务管理器"}),
+    (["截图", "截屏"], "screenshot", {}),
+    (["锁屏", "锁定"], "lock", {}),
+    (["静音"], "volume", {"mute": True}),
+]
+
+
+def fuzzy_match(text):
+    """兜底：纯关键词匹配，不依赖 LLM"""
+    if not text:
+        return None
+    t = fix_asr_text(text)
+    low = t.lower()
+    for keys, ttype, payload in FUZZY_RULES:
+        for k in keys:
+            if k in low:
+                return {"type": ttype, "payload": dict(payload)}
+    # 发消息
+    if "发消息" in low or "发个消息" in low:
+        import re as _re
+        m = _re.search(r"给(.{1,8}?)(?:发消息|发个消息)", t)
+        if m:
+            contact = m.group(1).strip()
+            body = t[m.end():].strip()
+            if contact:
+                return {"type": "qq",
+                        "payload": {"contact": contact,
+                                    "message": body or "你好"}}
+    return None
 
 
 # ---------------- LLM ----------------
@@ -411,6 +601,71 @@ def log_conv(q, a, kind="voice", extra=None):
 
 
 # ---------------- 路由 ----------------
+@app.route("/api/debug/save", methods=["POST"])
+def api_debug_save():
+    """保存上传的 WAV 到服务器，方便本地分析"""
+    raw = request.get_data()
+    if not raw:
+        return jsonify({"ok": False, "error": "no audio"}), 400
+    d = "/tmp/mybit_audio"
+    os.makedirs(d, exist_ok=True)
+    fn = os.path.join(d, "board_%s.wav" % time.strftime("%H%M%S"))
+    with open(fn, "wb") as f:
+        f.write(raw)
+    note("保存音频 %s (%d 字节)" % (fn, len(raw)))
+    return jsonify({"ok": True, "path": fn, "bytes": len(raw)})
+
+
+@app.route("/api/debug/asr", methods=["POST"])
+def api_debug_asr():
+    """
+    调试语音识别：上传 WAV，返回音频统计（不做意图解析）
+    用来判断录音质量到底如何。
+    """
+    raw = request.get_data()
+    if not raw:
+        return jsonify({"ok": False, "error": "no audio"}), 400
+
+    pcm, rate = wav_to_pcm(raw)
+    if rate != 16000:
+        pcm = resample_to_16k(pcm, rate)
+
+    rms_before = pcm_rms(pcm)
+    pcm2 = remove_dc_and_gain(pcm)
+    rms_after = pcm_rms(pcm2)
+
+    # 峰值
+    n = len(pcm) // 2
+    peak_before = 0
+    peak_after = 0
+    if n > 100:
+        step = max(1, n // 2000)
+        for i in range(0, n, step):
+            v = abs(struct.unpack("<h", pcm[i * 2:i * 2 + 2])[0])
+            if v > peak_before:
+                peak_before = v
+        for i in range(0, min(len(pcm2) // 2, n), step):
+            v = abs(struct.unpack("<h", pcm2[i * 2:i * 2 + 2])[0])
+            if v > peak_after:
+                peak_after = v
+
+    text, err = recognize(raw)
+
+    return jsonify({
+        "ok": True,
+        "bytes": len(raw),
+        "pcm_bytes": len(pcm),
+        "rate": rate,
+        "rms_before": round(rms_before, 1),
+        "rms_after": round(rms_after, 1),
+        "peak_before": peak_before,
+        "peak_after": peak_after,
+        "gain": round(max(1.0, 6000.0 / max(rms_before, 1)), 2),
+        "text": text,
+        "error": err,
+    })
+
+
 @app.route("/api/task/pull")
 def api_task_pull():
     """电脑端拉取待执行任务"""
@@ -507,6 +762,12 @@ def api_ask():
     # 先判断是不是要操作电脑
     if TQ is not None:
         task = parse_agent_intent(text)
+        if task is None:
+            # LLM 判断不出来，用模糊匹配兜底
+            task = fuzzy_match(text)
+            if task:
+                note("模糊匹配命中: %s" % task["type"])
+
         if task:
             tid = TQ.submit(task["type"], task["payload"], source="board")
             note("生成电脑任务 %s: %s" % (tid, task["type"]))
@@ -542,6 +803,10 @@ def api_ask_text():
 
     if TQ is not None:
         task = parse_agent_intent(q)
+        if task is None:
+            task = fuzzy_match(q)
+            if task:
+                note("模糊匹配命中: %s" % task["type"])
         if task:
             tid = TQ.submit(task["type"], task["payload"], source="text")
             note("生成电脑任务 %s: %s" % (tid, task["type"]))
