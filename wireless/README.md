@@ -33,6 +33,7 @@
 | `server/` | `relay_server.py` | 服务器 | 语音识别 + LLM + 任务分发 |
 | `server/` | `taskqueue.py` | 服务器 | 任务队列 |
 | `pc/` | `pc_agent.py` | 你的电脑 | 执行命令（开程序、发QQ、跑命令） |
+| `autostart/` | | | 开机自启配置（见 [autostart/README.md](autostart/README.md)） |
 
 ---
 
@@ -86,6 +87,23 @@ python pc_agent.py
 ```
 
 窗口留着别关。每 1.5 秒拉一次任务。
+
+### 4. 开机自启（可选，推荐）
+
+配好后整套系统无人值守，断电重来也能自动恢复。
+
+**服务器**：
+
+```bash
+cp autostart/mybit-relay.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mybit-relay.service
+loginctl enable-linger $USER          # 未登录也运行
+```
+
+**电脑**：右键 `autostart/安装开机自启.ps1` → 使用 PowerShell 运行
+
+详见 [autostart/README.md](autostart/README.md)
 
 ---
 

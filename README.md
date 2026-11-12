@@ -110,7 +110,8 @@ mybit-ai-companion/
 │   ├── README.md               部署与踩坑
 │   ├── board/                  板子端（认证/中转客户端/主程序）
 │   ├── server/                 服务器端（识别+LLM+任务队列）
-│   └── pc/                     电脑执行端（开程序/发QQ/跑命令）
+│   ├── pc/                     电脑执行端（开程序/发QQ/跑命令）
+│   └── autostart/              开机自启配置（systemd + Windows）
 ├── examples/           板子示例程序
 ├── firmware/           固件说明
 └── archive/            一次性调试脚本

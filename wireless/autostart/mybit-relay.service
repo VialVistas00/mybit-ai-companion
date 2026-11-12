@@ -1,0 +1,19 @@
+[Unit]
+Description=MYBIT Relay Server (whisper + LLM + task queue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mybit-relay
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HF_ENDPOINT=https://hf-mirror.com"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/usr/bin/python3 %h/mybit-relay/relay_server.py
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/mybit-relay/relay.log
+StandardError=append:%h/mybit-relay/relay.log
+
+[Install]
+WantedBy=default.target
